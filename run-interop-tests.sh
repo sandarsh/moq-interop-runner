@@ -57,6 +57,15 @@ while [[ $# -gt 0 ]]; do
             ;;
         --quic-only) TRANSPORT_FILTER="quic"; shift ;;
         --webtransport-only) TRANSPORT_FILTER="webtransport"; shift ;;
+        --only-at-target)
+            [ -n "$CLASSIFICATION_FILTER" ] && { echo "Error: only one --only-* flag allowed"; exit 1; }
+            CLASSIFICATION_FILTER="at"; shift ;;
+        --only-ahead-of-target)
+            [ -n "$CLASSIFICATION_FILTER" ] && { echo "Error: only one --only-* flag allowed"; exit 1; }
+            CLASSIFICATION_FILTER="ahead"; shift ;;
+        --only-behind-target)
+            [ -n "$CLASSIFICATION_FILTER" ] && { echo "Error: only one --only-* flag allowed"; exit 1; }
+            CLASSIFICATION_FILTER="behind"; shift ;;
         --target-version)
             [[ -n "${2:-}" ]] || { echo "Error: --target-version requires a value"; exit 1; }
             TARGET_VERSION="$2"; shift 2
@@ -65,19 +74,16 @@ while [[ $# -gt 0 ]]; do
             [[ -n "${2:-}" ]] || { echo "Error: --relay requires a value"; exit 1; }
             RELAY_FILTER="$2"; shift 2
             ;;
-        --only-at-target) CLASSIFICATION_FILTER="at"; shift ;;
-        --only-ahead-of-target) CLASSIFICATION_FILTER="ahead"; shift ;;
-        --only-behind-target) CLASSIFICATION_FILTER="behind"; shift ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
             echo "  --docker-only             Only test Docker images"
             echo "  --remote-only             Only test remote endpoints"
-            echo "  --transport TYPE          Filter by transport: quic or webtransport"
-            echo "  --quic-only               Only test raw QUIC endpoints (moqt://)"
-            echo "  --webtransport-only       Only test WebTransport endpoints (https://)"
-            echo "  --target-version VER      Target draft version (default: from config)"
+            echo "  --transport TYPE          Filter remote endpoints by transport (quic or webtransport)"
+            echo "  --quic-only               Filter remote endpoints to raw QUIC only (moqt://)"
+            echo "  --webtransport-only       Filter remote endpoints to WebTransport only (https://)"
+            echo "  --target-version VER      Target draft version for classification (default: from config)"
             echo "  --relay NAME              Only test specific relay implementation"
             echo "  --only-at-target          Only test pairs that negotiate the target version"
             echo "  --only-ahead-of-target    Only test pairs negotiating ahead of the target"
@@ -85,11 +91,30 @@ while [[ $# -gt 0 ]]; do
             echo "  --dry-run                 Show computed test plan without executing"
             echo "  --list                    List available implementations and exit"
             echo "  --help                    Show this help"
+            echo ""
+            echo "Notes:"
+            echo "  Transport filters (--transport, --quic-only, --webtransport-only) only affect"
+            echo "  remote endpoints. Docker tests are unaffected. Use --remote-only to skip Docker."
             exit 0
             ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# Validate flag combinations
+if [ -n "$TRANSPORT_FILTER" ] && [ "$TRANSPORT_FILTER" != "quic" ] && [ "$TRANSPORT_FILTER" != "webtransport" ]; then
+    echo "Error: --transport must be 'quic' or 'webtransport' (got: $TRANSPORT_FILTER)"
+    exit 1
+fi
+
+if [ -n "$TRANSPORT_FILTER" ] && [ "$DOCKER_ONLY" = true ]; then
+    echo "Warning: --transport has no effect with --docker-only (transport filters apply to remote endpoints only)" >&2
+fi
+
+if [ "$DOCKER_ONLY" = true ] && [ "$REMOTE_ONLY" = true ]; then
+    echo "Error: --docker-only and --remote-only are mutually exclusive"
+    exit 1
+fi
 
 # Check dependencies
 if ! command -v jq &> /dev/null; then
@@ -105,6 +130,20 @@ fi
 # Validate target version format
 if ! [[ "$TARGET_VERSION" =~ ^draft-[0-9]+$ ]]; then
     echo "Error: --target-version must be in format 'draft-NN' (got: $TARGET_VERSION)"
+    exit 1
+fi
+
+# Validate all draft_versions in config follow draft-NN format
+bad_versions=$(jq -r '
+    .implementations | to_entries[] |
+    .key as $impl |
+    .value.draft_versions[]? |
+    select(test("^draft-[0-9]+$") | not) |
+    "\($impl): \(.)"
+' "$CONFIG_FILE")
+if [ -n "$bad_versions" ]; then
+    echo "Error: malformed draft_versions in implementations.json (must be draft-NN):"
+    echo "$bad_versions"
     exit 1
 fi
 
@@ -172,6 +211,42 @@ classify_version() {
         echo "ahead"
     else
         echo "behind"
+    fi
+}
+
+# List runnable endpoints for a relay, one per line.
+# Output format: mode|target|tls_disable
+# Respects DOCKER_ONLY, REMOTE_ONLY, and TRANSPORT_FILTER.
+list_endpoints() {
+    local relay="$1"
+
+    # Docker endpoint
+    if [ "$REMOTE_ONLY" != true ]; then
+        local docker_image=$(jq -r --arg relay "$relay" '.implementations[$relay].roles.relay.docker.image // empty' "$CONFIG_FILE")
+        if [ -n "$docker_image" ]; then
+            echo "docker|$docker_image|false"
+        fi
+    fi
+
+    # Remote endpoints
+    if [ "$DOCKER_ONLY" != true ]; then
+        local remote_count=$(jq -r --arg relay "$relay" '.implementations[$relay].roles.relay.remote | length // 0' "$CONFIG_FILE")
+        for i in $(seq 0 $((remote_count - 1))); do
+            local url=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].url' "$CONFIG_FILE")
+            local transport=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].transport // "unknown"' "$CONFIG_FILE")
+            local tls_disable=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].tls_disable_verify // false' "$CONFIG_FILE")
+            local endpoint_status=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].status // "active"' "$CONFIG_FILE")
+
+            # Skip inactive endpoints
+            [ "$endpoint_status" = "inactive" ] && continue
+
+            # Apply transport filter
+            if [ -n "$TRANSPORT_FILTER" ] && [ "$transport" != "$TRANSPORT_FILTER" ]; then
+                continue
+            fi
+
+            echo "remote-$transport|$url|$tls_disable"
+        done
     fi
 }
 
@@ -274,43 +349,6 @@ run_test() {
     echo ""
 }
 
-# Test a client-relay pair at a specific version
-test_pair() {
-    local client="$1"
-    local relay="$2"
-    local version="$3"
-    local classification="$4"
-
-    # Docker test
-    if [ "$REMOTE_ONLY" != true ]; then
-        local docker_image=$(jq -r --arg relay "$relay" '.implementations[$relay].roles.relay.docker.image // empty' "$CONFIG_FILE")
-        if [ -n "$docker_image" ]; then
-            run_test "$client" "$relay" "$version" "$classification" "docker" "$docker_image"
-        fi
-    fi
-
-    # Remote tests
-    if [ "$DOCKER_ONLY" != true ]; then
-        local remote_count=$(jq -r --arg relay "$relay" '.implementations[$relay].roles.relay.remote | length // 0' "$CONFIG_FILE")
-        for i in $(seq 0 $((remote_count - 1))); do
-            local url=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].url' "$CONFIG_FILE")
-            local transport=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].transport // "unknown"' "$CONFIG_FILE")
-            local tls_disable=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].tls_disable_verify // false' "$CONFIG_FILE")
-            local endpoint_status=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].status // "active"' "$CONFIG_FILE")
-
-            # Skip inactive endpoints
-            [ "$endpoint_status" = "inactive" ] && continue
-
-            # Apply transport filter
-            if [ -n "$TRANSPORT_FILTER" ] && [ "$transport" != "$TRANSPORT_FILTER" ]; then
-                continue
-            fi
-
-            run_test "$client" "$relay" "$version" "$classification" "remote-$transport" "$url" "$tls_disable"
-        done
-    fi
-}
-
 #############################################################################
 # Main: Plan, Filter, Sort, Execute
 #############################################################################
@@ -357,10 +395,14 @@ echo -e "${BLUE}── Test Plan ──${NC}"
 echo ""
 
 # Build plan as parallel arrays (Bash 3.2 compatible)
+# Each entry represents a single runnable test (one endpoint of one pair)
 PLAN_CLIENT=()
 PLAN_RELAY=()
 PLAN_VERSION=()
 PLAN_CLASS=()
+PLAN_MODE=()
+PLAN_TARGET=()
+PLAN_TLS=()
 
 for client in "${CLIENTS_ARR[@]}"; do
     for relay in "${RELAYS_ARR[@]}"; do
@@ -373,25 +415,38 @@ for client in "${CLIENTS_ARR[@]}"; do
         fi
 
         class_display=$(format_classification "$classification")
-        echo -e "  $client → $relay: $version ($class_display)"
 
         # Apply classification filter
         if [ -n "$CLASSIFICATION_FILTER" ] && [ "$classification" != "$CLASSIFICATION_FILTER" ]; then
-            echo -e "    ${YELLOW}^ filtered out (--only-${CLASSIFICATION_FILTER}-target)${NC}"
+            echo -e "  $client → $relay: $version ($class_display) ${YELLOW}-- filtered (--only-${CLASSIFICATION_FILTER}-target)${NC}"
             continue
         fi
 
-        PLAN_CLIENT+=("$client")
-        PLAN_RELAY+=("$relay")
-        PLAN_VERSION+=("$version")
-        PLAN_CLASS+=("$classification")
+        # Enumerate runnable endpoints for this pair
+        endpoints=$(list_endpoints "$relay")
+        if [ -z "$endpoints" ]; then
+            echo -e "  $client → $relay: $version ($class_display) ${YELLOW}-- no runnable endpoints${NC}"
+            continue
+        fi
+
+        echo -e "  $client → $relay: $version ($class_display)"
+        while IFS='|' read -r mode target tls_disable; do
+            [ -z "$mode" ] && continue
+            echo -e "    $mode  $target"
+            PLAN_CLIENT+=("$client")
+            PLAN_RELAY+=("$relay")
+            PLAN_VERSION+=("$version")
+            PLAN_CLASS+=("$classification")
+            PLAN_MODE+=("$mode")
+            PLAN_TARGET+=("$target")
+            PLAN_TLS+=("$tls_disable")
+        done <<< "$endpoints"
     done
 done
 
 echo ""
 
 # Sort plan: at-target first, then ahead, then behind
-# Build index arrays for each classification, then concatenate
 SORTED_INDICES=()
 if [ ${#PLAN_CLASS[@]} -gt 0 ]; then
     for class in at ahead behind; do
@@ -403,8 +458,8 @@ if [ ${#PLAN_CLASS[@]} -gt 0 ]; then
     done
 fi
 
-PLAN_COUNT=${#SORTED_INDICES[@]}
-echo -e "${BLUE}Pairs to test: $PLAN_COUNT${NC}"
+RUN_COUNT=${#SORTED_INDICES[@]}
+echo -e "${BLUE}Runs planned: $RUN_COUNT${NC}"
 echo ""
 
 #############################################################################
@@ -412,15 +467,15 @@ echo ""
 #############################################################################
 
 if [ "$DRY_RUN" = true ]; then
-    if [ "$PLAN_COUNT" -eq 0 ]; then
-        echo "No pairs to test."
+    if [ "$RUN_COUNT" -eq 0 ]; then
+        echo "No tests to run."
     else
         echo -e "${BLUE}── Execution Order ──${NC}"
         echo ""
         local_n=1
         for idx in "${SORTED_INDICES[@]}"; do
             class_display=$(format_classification "${PLAN_CLASS[$idx]}")
-            echo -e "  $local_n. ${PLAN_CLIENT[$idx]} → ${PLAN_RELAY[$idx]}: ${PLAN_VERSION[$idx]} ($class_display)"
+            echo -e "  $local_n. ${PLAN_CLIENT[$idx]} → ${PLAN_RELAY[$idx]}  ${PLAN_VERSION[$idx]} ($class_display)  ${PLAN_MODE[$idx]}  ${PLAN_TARGET[$idx]}"
             local_n=$((local_n + 1))
         done
         echo ""
@@ -430,7 +485,8 @@ if [ "$DRY_RUN" = true ]; then
 fi
 
 for idx in "${SORTED_INDICES[@]}"; do
-    test_pair "${PLAN_CLIENT[$idx]}" "${PLAN_RELAY[$idx]}" "${PLAN_VERSION[$idx]}" "${PLAN_CLASS[$idx]}"
+    run_test "${PLAN_CLIENT[$idx]}" "${PLAN_RELAY[$idx]}" "${PLAN_VERSION[$idx]}" \
+             "${PLAN_CLASS[$idx]}" "${PLAN_MODE[$idx]}" "${PLAN_TARGET[$idx]}" "${PLAN_TLS[$idx]}"
 done
 
 #############################################################################
