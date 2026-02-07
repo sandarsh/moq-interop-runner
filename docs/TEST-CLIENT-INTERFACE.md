@@ -45,48 +45,112 @@ Environment variables take precedence over command-line defaults but not over ex
 
 ## Output Format
 
-### Human-Readable Output
+Test clients MUST output valid [TAP version 14](https://testanything.org/tap-version-14-specification.html) to stdout. See [Decision 001](./decisions/001-tap-output-format.md) for rationale.
 
-Each test result SHOULD be printed on a single line:
+TAP is both human-readable and machine-parseable, so there is no separate "machine-parseable" output mode. The harness parses TAP directly.
 
-```
-✓ setup-only (24 ms)
-✓ announce-only (31 ms)
-✗ subscribe-error (timeout after 2000 ms)
-```
+### Required Elements
 
-Include a summary at the end:
+Every test run MUST include:
 
-```
-Results: 2 passed, 1 failed
-```
+1. **Version line**: `TAP version 14`
+2. **Plan**: `1..N` where N is the number of test points
+3. **Test points**: One per test case, `ok N - name` or `not ok N - name`
 
-### Machine-Parseable Output
+### Minimal Example
 
-The final line of output MUST include a machine-parseable result:
-
-- `MOQT_TEST_RESULT: SUCCESS` - all tests passed
-- `MOQT_TEST_RESULT: FAILURE` - one or more tests failed
-
-This allows the test runner to determine results without parsing human-readable output.
-
-### Connection ID Reporting
-
-Each test result SHOULD include the QUIC connection ID(s) for mlog correlation:
-
-```
-✓ setup-only (24 ms) [CID: 84ee7793841adcadd926a1baf1c677cc]
+```tap
+TAP version 14
+1..3
+ok 1 - setup-only
+ok 2 - announce-only
+not ok 3 - subscribe-error
 ```
 
-For multi-connection tests (e.g., publisher + subscriber):
+### Skipped Tests
 
+Use the `SKIP` directive for tests the client does not implement:
+
+```tap
+TAP version 14
+1..3
+ok 1 - setup-only
+ok 2 - announce-only
+ok 3 - publish-namespace-done # SKIP not implemented
 ```
-✓ announce-subscribe (156 ms) [CID: pub=abc123..., sub=def456...]
+
+The harness counts skipped tests separately from passes and failures.
+
+### YAML Diagnostics
+
+YAML diagnostic blocks after test points are OPTIONAL but encouraged, especially for failures. They provide structured metadata the harness can use for richer reporting.
+
+```tap
+TAP version 14
+1..3
+ok 1 - setup-only
+  ---
+  duration_ms: 24
+  connection_id: 84ee7793841adcadd926a1baf1c677cc
+  ...
+ok 2 - announce-only
+  ---
+  duration_ms: 31
+  connection_id: a1b2c3d4e5f6789
+  ...
+not ok 3 - subscribe-error
+  ---
+  duration_ms: 2001
+  expected: SUBSCRIBE_ERROR
+  received: timeout
+  connection_id: def789
+  ...
 ```
+
+YAML blocks MUST be indented 2 spaces relative to the test point they follow. No standardized field names are required yet; use whatever is useful for debugging. Common fields:
+
+| Field | Description |
+|-------|-------------|
+| `duration_ms` | Test duration in milliseconds |
+| `connection_id` | QUIC connection ID for mlog correlation |
+| `expected` | What the test expected |
+| `received` | What actually happened |
+
+### Subtests
+
+Subtests are OPTIONAL. They are useful for multi-step tests where intermediate visibility helps debugging:
+
+```tap
+TAP version 14
+1..2
+ok 1 - setup-only
+# Subtest: announce-subscribe
+    1..4
+    ok 1 - publisher connected
+    ok 2 - publisher announced namespace
+    ok 3 - subscriber connected
+    ok 4 - subscriber received object
+ok 2 - announce-subscribe
+```
+
+The harness determines pass/fail from the correlated test point at the parent level. Subtests are indented 4 spaces.
+
+### Bail Out
+
+If a fatal error makes further testing pointless (e.g., relay is unreachable), use `Bail out!`:
+
+```tap
+TAP version 14
+1..5
+ok 1 - setup-only
+Bail out! Relay connection refused
+```
+
+The harness MUST treat a bail out as a failed test run.
 
 ### List Output
 
-When `--list` is specified, output one test identifier per line:
+When `--list` is specified, output one test identifier per line (not TAP format):
 
 ```
 setup-only
@@ -105,37 +169,32 @@ Test clients MUST implement timeouts to prevent hanging:
 
 - Individual tests SHOULD timeout after their specified duration (see test case specs)
 - If no timeout is specified, default to 5 seconds
-- On timeout, report the test as failed with a clear message
+- On timeout, report the test as failed with a clear message in the YAML diagnostics
 
 ## Error Reporting
 
-When tests fail, include enough context to diagnose the issue:
+When tests fail, include diagnostic context via YAML blocks:
 
-```
-✗ announce-only (2001 ms)
-  Expected: PUBLISH_NAMESPACE_OK
-  Received: timeout (no response after 2000 ms)
-  Connection ID: 84ee7793841adcadd926a1baf1c677cc
+```tap
+not ok 2 - announce-only
+  ---
+  duration_ms: 2001
+  expected: PUBLISH_NAMESPACE_OK
+  received: timeout
+  message: "no response after 2000 ms"
+  connection_id: 84ee7793841adcadd926a1baf1c677cc
+  ...
 ```
 
 For protocol errors:
 
+```tap
+not ok 3 - subscribe-error
+  ---
+  duration_ms: 45
+  expected: SUBSCRIBE_ERROR
+  received: SUBSCRIBE_OK
+  message: "unexpected success"
+  connection_id: 84ee7793841adcadd926a1baf1c677cc
+  ...
 ```
-✗ subscribe-error (45 ms)
-  Expected: SUBSCRIBE_ERROR
-  Received: SUBSCRIBE_OK (unexpected success)
-  Connection ID: 84ee7793841adcadd926a1baf1c677cc
-```
-
----
-
-## Output Format: Under Discussion
-
-> **Note**: The output format defined above is provisional. Before implementing a test client, please check with the moq-interop-runner maintainers or the MoQ working group about the current status of this specification.
->
-> We're evaluating alternatives including:
-> - [TAP (Test Anything Protocol)](https://testanything.org/) - established test output standard
-> - JSON Lines - fully structured, machine-parseable output
-> - mlog-based validation - using qlog/mlog events for test verification
->
-> Feedback welcome via GitHub issues or the MoQ mailing list.
