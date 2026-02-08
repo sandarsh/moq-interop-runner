@@ -50,10 +50,10 @@ If an upstream image uses different environment variable names, certificate path
 
 ```
 adapters/
-├── README.md           # This file
+├── README.md              # This file
 └── moxygen/
-    ├── Dockerfile      # Wraps upstream moxygen image
-    └── run_endpoint.sh # Optional CLI translation script
+    ├── Dockerfile.relay   # Wraps upstream moxygen relay image
+    └── run_endpoint.sh    # Optional CLI translation script
 ```
 
 ## Example: moxygen Adapter
@@ -78,9 +78,7 @@ EXPOSE 4443/udp
 3. Map environment variables or add wrapper scripts as needed
 4. Register the adapter in `implementations.json` with a `build` section pointing to your Dockerfile
 
-The `build.dockerfile` path in `implementations.json` is what `make build-adapters` uses to discover and build adapter images. The Dockerfile can be named anything, but we recommend:
-- `Dockerfile` if the adapter covers a single role
-- `Dockerfile.relay` / `Dockerfile.client` if the adapter covers multiple roles
+The `build.dockerfile` path in `implementations.json` is what `make build-adapters` uses to discover and build adapter images. Use `Dockerfile.relay` and `Dockerfile.client` to name your adapter Dockerfiles by role.
 
 ### Relay adapter registration
 
@@ -91,7 +89,7 @@ The `build.dockerfile` path in `implementations.json` is what `make build-adapte
       "docker": {
         "image": "your-impl-interop:latest",
         "build": {
-          "dockerfile": "adapters/your-impl/Dockerfile",
+          "dockerfile": "adapters/your-impl/Dockerfile.relay",
           "context": "adapters/your-impl"
         },
         "upstream_image": "original-image:latest"
@@ -141,7 +139,7 @@ make build-adapters
 make build-moxygen-adapter
 
 # Or with docker build
-docker build -t moxygen-interop:latest -f adapters/moxygen/Dockerfile adapters/moxygen/
+docker build -t moxygen-interop:latest -f adapters/moxygen/Dockerfile.relay adapters/moxygen/
 ```
 
 `make build-adapters` discovers all adapter builds from `implementations.json` — any entry whose `build.dockerfile` starts with `adapters/` is built automatically. Adding a new adapter only requires creating the directory and registering it in `implementations.json`; no Makefile changes are needed.

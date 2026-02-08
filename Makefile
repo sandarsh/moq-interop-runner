@@ -165,7 +165,7 @@ build-adapters:
 # Build individual adapter (kept for convenience / backward compatibility)
 build-moxygen-adapter:
 	@echo "Building moxygen adapter image..."
-	docker build -t moxygen-interop:latest -f adapters/moxygen/Dockerfile adapters/moxygen/
+	docker build -t moxygen-interop:latest -f adapters/moxygen/Dockerfile.relay adapters/moxygen/
 
 #############################################################################
 # Source Builds
