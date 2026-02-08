@@ -172,7 +172,7 @@ Each adapter produces a separate tagged image, so the interop runner can use the
 }
 ```
 
-If the upstream image already follows the interop runner conventions for both roles, you can skip the adapter entirely and just reference the image directly in `implementations.json` under each role.
+Note that even though the upstream image is shared, the interop runner needs separate image tags for each role because relays and clients have fundamentally different runtime behavior (long-running server vs run-and-exit test harness). The thin adapter Dockerfiles handle this by setting the appropriate entrypoint for each role.
 
 ## Building Adapters
 
