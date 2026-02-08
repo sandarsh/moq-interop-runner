@@ -129,6 +129,51 @@ FROM ghcr.io/example/moq-test-client:latest
 ENTRYPOINT ["sh", "-c", "TARGET_URL=$RELAY_URL SKIP_TLS_VERIFY=$TLS_DISABLE_VERIFY exec /usr/local/bin/moq-test-client"]
 ```
 
+### Combined relay+client images
+
+Some implementations ship a single Docker image that contains both the relay and the test client, selecting the role via a command or environment variable. This is fine — just register it under both roles with separate adapter Dockerfiles that set the appropriate entrypoint:
+
+```dockerfile
+# Dockerfile.relay
+FROM ghcr.io/example/moq-combined:latest
+ENTRYPOINT ["moq-server", "--relay"]
+```
+
+```dockerfile
+# Dockerfile.client
+FROM ghcr.io/example/moq-combined:latest
+ENTRYPOINT ["moq-test-client"]
+```
+
+Each adapter produces a separate tagged image, so the interop runner can use them independently:
+
+```json
+"your-impl": {
+  "roles": {
+    "relay": {
+      "docker": {
+        "image": "your-impl-relay:latest",
+        "build": {
+          "dockerfile": "adapters/your-impl/Dockerfile.relay",
+          "context": "adapters/your-impl"
+        }
+      }
+    },
+    "client": {
+      "docker": {
+        "image": "your-impl-client:latest",
+        "build": {
+          "dockerfile": "adapters/your-impl/Dockerfile.client",
+          "context": "adapters/your-impl"
+        }
+      }
+    }
+  }
+}
+```
+
+If the upstream image already follows the interop runner conventions for both roles, you can skip the adapter entirely and just reference the image directly in `implementations.json` under each role.
+
 ## Building Adapters
 
 ```bash
