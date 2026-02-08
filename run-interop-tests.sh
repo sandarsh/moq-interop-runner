@@ -1,12 +1,12 @@
 #!/bin/bash
-# run-interop-tests.sh - Run MoQT interop tests with client×relay version matching
+# run-interop-tests.sh - Run MoQT interop tests across client x relay pairs
 #
-# Implements the version-matching algorithm:
-# 1. Phase 1: Test all (client, relay) pairs at current target version
-# 2. Phase 2: Fallback for "behind" implementations (max version < target)
-# 3. Phase 3: Forward tests for "ahead" implementations (have newer versions)
+# For each (client, relay) pair, predicts the negotiated version as the newest
+# draft version both sides support. This matches wire behavior -- the runner
+# cannot control version negotiation.
 #
-# Each (client, relay) pair is only tested once, at the newest common version.
+# Pairs are classified relative to a target version (at / ahead / behind)
+# and can be filtered or sorted by that classification.
 #
 # Exit codes:
 #   0 - All tests passed (or no tests run)
@@ -39,21 +39,33 @@ fi
 DOCKER_ONLY=false
 REMOTE_ONLY=false
 LIST_ONLY=false
+DRY_RUN=false
 TRANSPORT_FILTER=""
 TARGET_VERSION=""  # Will be read from config if not specified
 RELAY_FILTER=""    # Filter to specific relay implementation
+CLASSIFICATION_FILTER=""  # "", "at", "ahead", or "behind"
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         --docker-only) DOCKER_ONLY=true; shift ;;
         --remote-only) REMOTE_ONLY=true; shift ;;
         --list) LIST_ONLY=true; shift ;;
+        --dry-run) DRY_RUN=true; shift ;;
         --transport)
             [[ -n "${2:-}" ]] || { echo "Error: --transport requires a value"; exit 1; }
             TRANSPORT_FILTER="$2"; shift 2
             ;;
         --quic-only) TRANSPORT_FILTER="quic"; shift ;;
         --webtransport-only) TRANSPORT_FILTER="webtransport"; shift ;;
+        --only-at-target)
+            [ -n "$CLASSIFICATION_FILTER" ] && { echo "Error: only one --only-* flag allowed"; exit 1; }
+            CLASSIFICATION_FILTER="at"; shift ;;
+        --only-ahead-of-target)
+            [ -n "$CLASSIFICATION_FILTER" ] && { echo "Error: only one --only-* flag allowed"; exit 1; }
+            CLASSIFICATION_FILTER="ahead"; shift ;;
+        --only-behind-target)
+            [ -n "$CLASSIFICATION_FILTER" ] && { echo "Error: only one --only-* flag allowed"; exit 1; }
+            CLASSIFICATION_FILTER="behind"; shift ;;
         --target-version)
             [[ -n "${2:-}" ]] || { echo "Error: --target-version requires a value"; exit 1; }
             TARGET_VERSION="$2"; shift 2
@@ -66,20 +78,43 @@ while [[ $# -gt 0 ]]; do
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --docker-only        Only test Docker images"
-            echo "  --remote-only        Only test remote endpoints"
-            echo "  --transport TYPE     Filter by transport: quic or webtransport"
-            echo "  --quic-only          Only test raw QUIC endpoints (moqt://)"
-            echo "  --webtransport-only  Only test WebTransport endpoints (https://)"
-            echo "  --target-version VER Target draft version (default: from config)"
-            echo "  --relay NAME         Only test specific relay implementation"
-            echo "  --list               List available implementations and exit"
-            echo "  --help               Show this help"
+            echo "  --docker-only             Only test Docker images"
+            echo "  --remote-only             Only test remote endpoints"
+            echo "  --transport TYPE          Filter remote endpoints by transport (quic or webtransport)"
+            echo "  --quic-only               Filter remote endpoints to raw QUIC only (moqt://)"
+            echo "  --webtransport-only       Filter remote endpoints to WebTransport only (https://)"
+            echo "  --target-version VER      Target draft version for classification (default: from config)"
+            echo "  --relay NAME              Only test specific relay implementation"
+            echo "  --only-at-target          Only test pairs that negotiate the target version"
+            echo "  --only-ahead-of-target    Only test pairs negotiating ahead of the target"
+            echo "  --only-behind-target      Only test pairs negotiating behind the target"
+            echo "  --dry-run                 Show computed test plan without executing"
+            echo "  --list                    List available implementations and exit"
+            echo "  --help                    Show this help"
+            echo ""
+            echo "Notes:"
+            echo "  Transport filters (--transport, --quic-only, --webtransport-only) only affect"
+            echo "  remote endpoints. Docker tests are unaffected. Use --remote-only to skip Docker."
             exit 0
             ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+# Validate flag combinations
+if [ -n "$TRANSPORT_FILTER" ] && [ "$TRANSPORT_FILTER" != "quic" ] && [ "$TRANSPORT_FILTER" != "webtransport" ]; then
+    echo "Error: --transport must be 'quic' or 'webtransport' (got: $TRANSPORT_FILTER)"
+    exit 1
+fi
+
+if [ -n "$TRANSPORT_FILTER" ] && [ "$DOCKER_ONLY" = true ]; then
+    echo "Warning: --transport has no effect with --docker-only (transport filters apply to remote endpoints only)" >&2
+fi
+
+if [ "$DOCKER_ONLY" = true ] && [ "$REMOTE_ONLY" = true ]; then
+    echo "Error: --docker-only and --remote-only are mutually exclusive"
+    exit 1
+fi
 
 # Check dependencies
 if ! command -v jq &> /dev/null; then
@@ -90,6 +125,26 @@ fi
 # Read target version from config if not specified via CLI
 if [ -z "$TARGET_VERSION" ]; then
     TARGET_VERSION=$(jq -r '.current_target // "draft-14"' "$CONFIG_FILE")
+fi
+
+# Validate target version format
+if ! [[ "$TARGET_VERSION" =~ ^draft-[0-9]+$ ]]; then
+    echo "Error: --target-version must be in format 'draft-NN' (got: $TARGET_VERSION)"
+    exit 1
+fi
+
+# Validate all draft_versions in config follow draft-NN format
+bad_versions=$(jq -r '
+    .implementations | to_entries[] |
+    .key as $impl |
+    .value.draft_versions[]? |
+    select(test("^draft-[0-9]+$") | not) |
+    "\($impl): \(.)"
+' "$CONFIG_FILE")
+if [ -n "$bad_versions" ]; then
+    echo "Error: malformed draft_versions in implementations.json (must be draft-NN):"
+    echo "$bad_versions"
+    exit 1
 fi
 
 # List implementations with version info
@@ -106,8 +161,10 @@ if [ "$LIST_ONLY" = true ]; then
     exit 0
 fi
 
-# Create results directory
-mkdir -p "$RESULTS_DIR"
+# Create results directory (skip for dry run)
+if [ "$DRY_RUN" != true ]; then
+    mkdir -p "$RESULTS_DIR"
+fi
 
 #############################################################################
 # Helper Functions
@@ -119,53 +176,91 @@ get_impls_with_role() {
     jq -r --arg role "$role" '.implementations | to_entries[] | select(.value.roles[$role] != null) | .key' "$CONFIG_FILE"
 }
 
-# Check if implementation supports a version
-supports_version() {
-    local impl="$1"
-    local version="$2"
-    jq -e --arg impl "$impl" --arg ver "$version" '.implementations[$impl].draft_versions | index($ver)' "$CONFIG_FILE" > /dev/null 2>&1
+# Compute the version a (client, relay) pair will negotiate.
+# Returns the newest shared draft version, or empty string if none.
+compute_negotiated_version() {
+    local client="$1"
+    local relay="$2"
+    jq -r --arg client "$client" --arg relay "$relay" '
+        (.implementations[$client].draft_versions // []) as $cv |
+        (.implementations[$relay].draft_versions // []) as $rv |
+        # Find shared versions
+        [$cv[] | select(. as $v | $rv | index($v))] |
+        if length == 0 then ""
+        else
+            # Return the newest (highest draft number)
+            sort_by(ltrimstr("draft-") | tonumber) | reverse | .[0]
+        end
+    ' "$CONFIG_FILE"
 }
 
-# Get newest version for an implementation
-get_newest_version() {
-    local impl="$1"
-    # Sort versions and get the first (newest) - assumes draft-NN format
-    jq -r --arg impl "$impl" '.implementations[$impl].draft_versions | sort_by(. | ltrimstr("draft-") | tonumber) | reverse | .[0]' "$CONFIG_FILE"
-}
-
-# Compare versions: returns "gt" if v1 > v2, "lt" if v1 < v2, "eq" if equal
-# NOTE: Currently unused - retained for potential future version negotiation logic
-compare_versions() {
-    local v1="$1"
-    local v2="$2"
-    local n1=$(echo "$v1" | sed 's/draft-//')
-    local n2=$(echo "$v2" | sed 's/draft-//')
-    if [ "$n1" -gt "$n2" ]; then echo "gt"
-    elif [ "$n1" -lt "$n2" ]; then echo "lt"
-    else echo "eq"
+# Classify a version relative to the target.
+# Returns: "at", "ahead", "behind", or "none" (if version is empty)
+classify_version() {
+    local version="$1"
+    local target="$2"
+    if [ -z "$version" ]; then
+        echo "none"
+        return
+    fi
+    local v_num="${version#draft-}"
+    local t_num="${target#draft-}"
+    if [ "$v_num" -eq "$t_num" ]; then
+        echo "at"
+    elif [ "$v_num" -gt "$t_num" ]; then
+        echo "ahead"
+    else
+        echo "behind"
     fi
 }
 
-# Track tested pairs (file-based for simplicity)
-TESTED_PAIRS_FILE="$RESULTS_DIR/.tested_pairs"
-touch "$TESTED_PAIRS_FILE"
+# List runnable endpoints for a relay, one per line.
+# Output format: mode|target|tls_disable
+# Respects DOCKER_ONLY, REMOTE_ONLY, and TRANSPORT_FILTER.
+list_endpoints() {
+    local relay="$1"
 
-# Cleanup handler to remove temporary files on exit
-cleanup() {
-    rm -f "$TESTED_PAIRS_FILE"
+    # Docker endpoint
+    if [ "$REMOTE_ONLY" != true ]; then
+        local docker_image=$(jq -r --arg relay "$relay" '.implementations[$relay].roles.relay.docker.image // empty' "$CONFIG_FILE")
+        if [ -n "$docker_image" ]; then
+            echo "docker|$docker_image|false"
+        fi
+    fi
+
+    # Remote endpoints
+    if [ "$DOCKER_ONLY" != true ]; then
+        local remote_count=$(jq -r --arg relay "$relay" '.implementations[$relay].roles.relay.remote | length // 0' "$CONFIG_FILE")
+        if [ "$remote_count" -gt 0 ]; then
+        for i in $(seq 0 $((remote_count - 1))); do
+            local url=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].url' "$CONFIG_FILE")
+            local transport=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].transport // "unknown"' "$CONFIG_FILE")
+            local tls_disable=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].tls_disable_verify // false' "$CONFIG_FILE")
+            local endpoint_status=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].status // "active"' "$CONFIG_FILE")
+
+            # Skip inactive endpoints
+            [ "$endpoint_status" = "inactive" ] && continue
+
+            # Apply transport filter
+            if [ -n "$TRANSPORT_FILTER" ] && [ "$transport" != "$TRANSPORT_FILTER" ]; then
+                continue
+            fi
+
+            echo "remote-$transport|$url|$tls_disable"
+        done
+        fi
+    fi
 }
-trap cleanup EXIT INT TERM
 
-is_pair_tested() {
-    local client="$1"
-    local relay="$2"
-    grep -q "^${client}:${relay}$" "$TESTED_PAIRS_FILE" 2>/dev/null
-}
-
-mark_pair_tested() {
-    local client="$1"
-    local relay="$2"
-    echo "${client}:${relay}" >> "$TESTED_PAIRS_FILE"
+# Format classification for display
+format_classification() {
+    local classification="$1"
+    case "$classification" in
+        at)     echo -e "${GREEN}at-target${NC}" ;;
+        ahead)  echo -e "${CYAN}ahead${NC}" ;;
+        behind) echo -e "${YELLOW}behind${NC}" ;;
+        *)      echo "none" ;;
+    esac
 }
 
 #############################################################################
@@ -176,18 +271,21 @@ TOTAL=0
 PASSED=0
 FAILED=0
 
-# Initialize summary JSON
-SUMMARY_FILE="$RESULTS_DIR/summary.json"
-jq -n --arg version "$TARGET_VERSION" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-  '{runs: [], target_version: $version, timestamp: $ts}' > "$SUMMARY_FILE"
+# Initialize summary JSON (skip for dry run)
+if [ "$DRY_RUN" != true ]; then
+    SUMMARY_FILE="$RESULTS_DIR/summary.json"
+    jq -n --arg version "$TARGET_VERSION" --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{runs: [], target_version: $version, timestamp: $ts}' > "$SUMMARY_FILE"
+fi
 
 run_test() {
     local client="$1"
     local relay="$2"
     local version="$3"
-    local mode="$4"      # "docker" or "remote-quic" or "remote-webtransport"
-    local target="$5"    # image name or URL
-    local tls_disable="${6:-false}"
+    local classification="$4"  # "at", "ahead", or "behind"
+    local mode="$5"      # "docker" or "remote-quic" or "remote-webtransport"
+    local target="$6"    # image name or URL
+    local tls_disable="${7:-false}"
 
     TOTAL=$((TOTAL + 1))
 
@@ -237,11 +335,12 @@ run_test() {
     if jq --arg client "$client" \
           --arg relay "$relay" \
           --arg version "$version" \
+          --arg classification "$classification" \
           --arg mode "$mode" \
           --arg target "$target" \
           --arg status "$status" \
           --argjson exit_code "$exit_code" \
-          '.runs += [{"client": $client, "relay": $relay, "version": $version, "mode": $mode, "target": $target, "status": $status, "exit_code": $exit_code}]' \
+          '.runs += [{"client": $client, "relay": $relay, "version": $version, "classification": $classification, "mode": $mode, "target": $target, "status": $status, "exit_code": $exit_code}]' \
           "$SUMMARY_FILE" > "$tmp_file"; then
         mv "$tmp_file" "$SUMMARY_FILE"
     else
@@ -252,65 +351,26 @@ run_test() {
     echo ""
 }
 
-# Test a client-relay pair at a specific version
-test_pair() {
-    local client="$1"
-    local relay="$2"
-    local version="$3"
-
-    # Skip if already tested
-    if is_pair_tested "$client" "$relay"; then
-        echo -e "${YELLOW}  Skipping $client → $relay (already tested)${NC}"
-        return
-    fi
-
-    mark_pair_tested "$client" "$relay"
-
-    # Get relay endpoints
-    # Docker test
-    if [ "$REMOTE_ONLY" != true ]; then
-        local docker_image=$(jq -r --arg relay "$relay" '.implementations[$relay].roles.relay.docker.image // empty' "$CONFIG_FILE")
-        if [ -n "$docker_image" ]; then
-            run_test "$client" "$relay" "$version" "docker" "$docker_image"
-        fi
-    fi
-
-    # Remote tests
-    if [ "$DOCKER_ONLY" != true ]; then
-        local remote_count=$(jq -r --arg relay "$relay" '.implementations[$relay].roles.relay.remote | length // 0' "$CONFIG_FILE")
-        for i in $(seq 0 $((remote_count - 1))); do
-            local url=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].url' "$CONFIG_FILE")
-            local transport=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].transport // "unknown"' "$CONFIG_FILE")
-            local tls_disable=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].tls_disable_verify // false' "$CONFIG_FILE")
-            local endpoint_status=$(jq -r --arg relay "$relay" --argjson i "$i" '.implementations[$relay].roles.relay.remote[$i].status // "active"' "$CONFIG_FILE")
-
-            # Skip inactive endpoints
-            [ "$endpoint_status" = "inactive" ] && continue
-
-            # Apply transport filter
-            if [ -n "$TRANSPORT_FILTER" ] && [ "$transport" != "$TRANSPORT_FILTER" ]; then
-                continue
-            fi
-
-            run_test "$client" "$relay" "$version" "remote-$transport" "$url" "$tls_disable"
-        done
-    fi
-}
-
 #############################################################################
-# Main Algorithm
+# Main: Plan, Filter, Sort, Execute
 #############################################################################
 
 echo -e "${BLUE}╔═══════════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║         MoQT Interop Tests - Version Matching                 ║${NC}"
+echo -e "${BLUE}║              MoQT Interop Tests                             ║${NC}"
 echo -e "${BLUE}╚═══════════════════════════════════════════════════════════════╝${NC}"
 echo ""
 echo -e "Target version: ${CYAN}$TARGET_VERSION${NC}"
-echo -e "Results: $RESULTS_DIR"
+if [ "$DRY_RUN" = true ]; then
+    echo -e "Mode: ${YELLOW}dry run${NC}"
+else
+    echo -e "Results: $RESULTS_DIR"
+fi
+if [ -n "$CLASSIFICATION_FILTER" ]; then
+    echo -e "Filter: only ${CLASSIFICATION_FILTER}-target pairs"
+fi
 echo ""
 
-# Get all clients and relays as arrays (avoids word-splitting issues)
-# Uses while-read instead of mapfile for Bash 3.2 (macOS) compatibility
+# Get all clients and relays
 CLIENTS_ARR=()
 while IFS= read -r line; do
     [ -n "$line" ] && CLIENTS_ARR+=("$line")
@@ -330,111 +390,106 @@ echo -e "${BLUE}Relays:${NC} ${RELAYS_ARR[*]}"
 echo ""
 
 #############################################################################
-# Phase 1: Primary tests at target version
+# Phase 1: Compute test plan
 #############################################################################
 
-echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
-echo -e "${CYAN}Phase 1: Primary tests at $TARGET_VERSION${NC}"
-echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}── Test Plan ──${NC}"
 echo ""
 
-for client in "${CLIENTS_ARR[@]}"; do
-    if ! supports_version "$client" "$TARGET_VERSION"; then
-        continue
-    fi
+# Build plan as parallel arrays (Bash 3.2 compatible)
+# Each entry represents a single runnable test (one endpoint of one pair)
+PLAN_CLIENT=()
+PLAN_RELAY=()
+PLAN_VERSION=()
+PLAN_CLASS=()
+PLAN_MODE=()
+PLAN_TARGET=()
+PLAN_TLS=()
 
+for client in "${CLIENTS_ARR[@]}"; do
     for relay in "${RELAYS_ARR[@]}"; do
-        if ! supports_version "$relay" "$TARGET_VERSION"; then
+        version=$(compute_negotiated_version "$client" "$relay")
+        classification=$(classify_version "$version" "$TARGET_VERSION")
+
+        if [ "$classification" = "none" ]; then
+            echo -e "  $client → $relay: ${YELLOW}no shared version, skipping${NC}"
             continue
         fi
 
-        echo -e "${YELLOW}Testing: $client → $relay (at $TARGET_VERSION)${NC}"
-        test_pair "$client" "$relay" "$TARGET_VERSION"
+        class_display=$(format_classification "$classification")
+
+        # Apply classification filter
+        if [ -n "$CLASSIFICATION_FILTER" ] && [ "$classification" != "$CLASSIFICATION_FILTER" ]; then
+            echo -e "  $client → $relay: $version ($class_display) ${YELLOW}-- filtered (--only-${CLASSIFICATION_FILTER}-target)${NC}"
+            continue
+        fi
+
+        # Enumerate runnable endpoints for this pair
+        endpoints=$(list_endpoints "$relay")
+        if [ -z "$endpoints" ]; then
+            echo -e "  $client → $relay: $version ($class_display) ${YELLOW}-- no runnable endpoints${NC}"
+            continue
+        fi
+
+        echo -e "  $client → $relay: $version ($class_display)"
+        while IFS='|' read -r mode target tls_disable; do
+            [ -z "$mode" ] && continue
+            echo -e "    $mode  $target"
+            PLAN_CLIENT+=("$client")
+            PLAN_RELAY+=("$relay")
+            PLAN_VERSION+=("$version")
+            PLAN_CLASS+=("$classification")
+            PLAN_MODE+=("$mode")
+            PLAN_TARGET+=("$target")
+            PLAN_TLS+=("$tls_disable")
+        done <<< "$endpoints"
     done
 done
 
-#############################################################################
-# Phase 2: Fallback for "behind" implementations
-#############################################################################
-
-echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
-echo -e "${CYAN}Phase 2: Fallback for implementations behind $TARGET_VERSION${NC}"
-echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
 echo ""
 
-target_num=$(echo "$TARGET_VERSION" | sed 's/draft-//')
-
-# Find relays that are behind
-for relay in "${RELAYS_ARR[@]}"; do
-    relay_newest=$(get_newest_version "$relay")
-    relay_num=$(echo "$relay_newest" | sed 's/draft-//')
-
-    if [ "$relay_num" -lt "$target_num" ]; then
-        echo -e "${YELLOW}Relay $relay is behind (newest: $relay_newest)${NC}"
-
-        # Find clients that support this relay's newest version
-        for client in "${CLIENTS_ARR[@]}"; do
-            if supports_version "$client" "$relay_newest"; then
-                echo -e "  Found compatible client: $client"
-                test_pair "$client" "$relay" "$relay_newest"
+# Sort plan: at-target first, then ahead, then behind
+SORTED_INDICES=()
+if [ ${#PLAN_CLASS[@]} -gt 0 ]; then
+    for class in at ahead behind; do
+        for i in $(seq 0 $((${#PLAN_CLASS[@]} - 1))); do
+            if [ "${PLAN_CLASS[$i]}" = "$class" ]; then
+                SORTED_INDICES+=("$i")
             fi
-        done
-    fi
-done
-
-# Find clients that are behind
-for client in "${CLIENTS_ARR[@]}"; do
-    client_newest=$(get_newest_version "$client")
-    client_num=$(echo "$client_newest" | sed 's/draft-//')
-
-    if [ "$client_num" -lt "$target_num" ]; then
-        echo -e "${YELLOW}Client $client is behind (newest: $client_newest)${NC}"
-
-        # Find relays that support this client's newest version
-        for relay in "${RELAYS_ARR[@]}"; do
-            if supports_version "$relay" "$client_newest"; then
-                echo -e "  Found compatible relay: $relay"
-                test_pair "$client" "$relay" "$client_newest"
-            fi
-        done
-    fi
-done
-
-#############################################################################
-# Phase 3: Forward tests for "ahead" implementations
-#############################################################################
-
-echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
-echo -e "${CYAN}Phase 3: Forward tests for implementations ahead of $TARGET_VERSION${NC}"
-echo -e "${CYAN}════════════════════════════════════════════════════════════════${NC}"
-echo ""
-
-# Collect all versions newer than target
-AHEAD_VERSIONS_ARR=()
-while IFS= read -r line; do
-    [ -n "$line" ] && AHEAD_VERSIONS_ARR+=("$line")
-done < <(jq -r "[.implementations[].draft_versions[]] | unique | .[] | select((. | ltrimstr(\"draft-\") | tonumber) > $target_num)" "$CONFIG_FILE" | sort -t'-' -k2 -rn)
-
-# Guard against empty array with set -u
-if [ ${#AHEAD_VERSIONS_ARR[@]} -gt 0 ]; then
-    for version in "${AHEAD_VERSIONS_ARR[@]}"; do
-        echo -e "${YELLOW}Testing at $version (ahead of target)${NC}"
-
-        for client in "${CLIENTS_ARR[@]}"; do
-            if ! supports_version "$client" "$version"; then
-                continue
-            fi
-
-            for relay in "${RELAYS_ARR[@]}"; do
-                if ! supports_version "$relay" "$version"; then
-                    continue
-                fi
-
-                test_pair "$client" "$relay" "$version"
-            done
         done
     done
 fi
+
+RUN_COUNT=${#SORTED_INDICES[@]}
+echo -e "${BLUE}Runs planned: $RUN_COUNT${NC}"
+echo ""
+
+#############################################################################
+# Phase 2: Execute (or show dry-run summary)
+#############################################################################
+
+if [ "$DRY_RUN" = true ]; then
+    if [ "$RUN_COUNT" -eq 0 ]; then
+        echo "No tests to run."
+    else
+        echo -e "${BLUE}── Execution Order ──${NC}"
+        echo ""
+        local_n=1
+        for idx in "${SORTED_INDICES[@]}"; do
+            class_display=$(format_classification "${PLAN_CLASS[$idx]}")
+            echo -e "  $local_n. ${PLAN_CLIENT[$idx]} → ${PLAN_RELAY[$idx]}  ${PLAN_VERSION[$idx]} ($class_display)  ${PLAN_MODE[$idx]}  ${PLAN_TARGET[$idx]}"
+            local_n=$((local_n + 1))
+        done
+        echo ""
+        echo "Run without --dry-run to execute."
+    fi
+    exit 0
+fi
+
+for idx in "${SORTED_INDICES[@]}"; do
+    run_test "${PLAN_CLIENT[$idx]}" "${PLAN_RELAY[$idx]}" "${PLAN_VERSION[$idx]}" \
+             "${PLAN_CLASS[$idx]}" "${PLAN_MODE[$idx]}" "${PLAN_TARGET[$idx]}" "${PLAN_TLS[$idx]}"
+done
 
 #############################################################################
 # Summary
@@ -450,8 +505,6 @@ echo -e "${RED}Failed:  $FAILED${NC}"
 echo ""
 echo -e "Results saved to: $RESULTS_DIR"
 echo -e "Summary JSON: $SUMMARY_FILE"
-
-# Note: TESTED_PAIRS_FILE cleanup is handled by trap
 
 # Exit with failure if any tests failed
 [ $FAILED -gt 0 ] && exit 1
