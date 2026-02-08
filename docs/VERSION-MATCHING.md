@@ -6,7 +6,7 @@ For the design rationale behind this approach, see [Decision 002: Version Select
 
 ## The core idea
 
-The runner cannot control MoQT version negotiation — implementations negotiate on the wire. In practice, two implementations that share at least one draft version are expected to negotiate the newest one both support. The runner predicts this outcome and uses it for labeling and classification, not as a directive.
+The runner cannot control MoQT version negotiation — implementations negotiate on the wire. In practice, two implementations that share at least one draft version are expected to negotiate the newest one both support (a prediction, not a guarantee — see [Decision 002](decisions/002-version-selection-strategy.md) for caveats). The runner uses this prediction for labeling and classification, not as a directive.
 
 ## Inputs
 
@@ -28,7 +28,7 @@ if shared is empty → skip pair
 predicted_version = max(shared)    # newest shared draft
 ```
 
-Implemented in `compute_negotiated_version()` (`run-interop-tests.sh:181`).
+See `compute_negotiated_version()` in `run-interop-tests.sh`.
 
 ### 2. Classify relative to target
 
@@ -40,7 +40,7 @@ Each pair's predicted version is classified:
 | Greater              | `ahead`        | `ahead`          |
 | Less                 | `behind`       | `behind`         |
 
-Implemented in `classify_version()` (`run-interop-tests.sh:199`).
+See `classify_version()` in `run-interop-tests.sh`.
 
 ### 3. Expand to endpoints
 
@@ -51,7 +51,7 @@ Each pair is expanded into one or more runnable tests based on the relay's endpo
 
 Inactive endpoints (`"status": "inactive"`) are skipped. The plan is endpoint-level — a pair with both QUIC and WebTransport remote endpoints produces two runs.
 
-Implemented in `list_endpoints()` (`run-interop-tests.sh:220`).
+See `list_endpoints()` in `run-interop-tests.sh`.
 
 ### 4. Filter
 
@@ -69,7 +69,9 @@ Filters narrow the plan without changing version computation:
 | `--quic-only` | Shorthand for `--transport quic` | Endpoint-level |
 | `--webtransport-only` | Shorthand for `--transport webtransport` | Endpoint-level |
 
-Classification filters and `--relay` apply before endpoint expansion. Transport filters apply during expansion. Only one `--only-*` flag is allowed. `--docker-only` and `--remote-only` are mutually exclusive. Transport filters only affect remote endpoints — Docker tests have no transport field.
+Classification filters and `--relay` apply before endpoint expansion. Transport filters apply during expansion. Only one `--only-*` flag is allowed. `--docker-only` and `--remote-only` are mutually exclusive.
+
+Note: transport filters (`--transport`, `--quic-only`, `--webtransport-only`) only affect remote endpoints. Docker tests still run unless `--remote-only` is also set.
 
 ### 5. Sort and execute
 
@@ -162,13 +164,15 @@ The schema defines an optional `draft_version` field on individual endpoints. Th
 
 ## Key functions
 
-| Function | Location | Purpose |
-|----------|----------|---------|
-| `compute_negotiated_version` | `run-interop-tests.sh:181` | Newest shared draft version for a pair |
-| `classify_version` | `run-interop-tests.sh:199` | `at` / `ahead` / `behind` relative to target |
-| `list_endpoints` | `run-interop-tests.sh:220` | Enumerate runnable endpoints for a relay |
-| `format_classification` | `run-interop-tests.sh:256` | Color-coded terminal display |
-| `run_test` | `run-interop-tests.sh:281` | Execute one endpoint test and record result |
+All defined in `run-interop-tests.sh`:
+
+| Function | Purpose |
+|----------|---------|
+| `compute_negotiated_version` | Newest shared draft version for a pair |
+| `classify_version` | `at` / `ahead` / `behind` relative to target |
+| `list_endpoints` | Enumerate runnable endpoints for a relay |
+| `format_classification` | Color-coded terminal display |
+| `run_test` | Execute one endpoint test and record result |
 
 ## What changed from the previous algorithm
 
