@@ -15,7 +15,7 @@
 .PHONY: test test-verbose test-single test-external clean mlog-clean certs \
         interop-all interop-docker interop-remote interop-relay interop-list \
         relay-start relay-stop logs logs-relay logs-client \
-        build-moxygen-adapter build-impl build-moq-rs report help _ensure-certs
+        build-adapters build-moxygen-adapter build-impl build-moq-rs report help _ensure-certs
 
 #############################################################################
 # Image Configuration
@@ -151,6 +151,17 @@ interop-list:
 # to conform to the interop testing conventions (e.g., /certs mount point).
 #############################################################################
 
+# Build all adapter images (discovers adapters automatically)
+build-adapters:
+	@for dir in adapters/*/; do \
+		name=$$(basename "$$dir"); \
+		if [ -f "$$dir/Dockerfile" ]; then \
+			echo "Building adapter: $$name"; \
+			docker build -t "$$name-interop:latest" -f "$$dir/Dockerfile" "$$dir"; \
+		fi; \
+	done
+
+# Build individual adapter (kept for convenience / backward compatibility)
 build-moxygen-adapter:
 	@echo "Building moxygen adapter image..."
 	docker build -t moxygen-interop:latest -f adapters/moxygen/Dockerfile adapters/moxygen/
@@ -217,8 +228,9 @@ help:
 	@echo "  test-single           Run single test: make test-single TESTCASE=setup-only"
 	@echo "  test-external         Test external relay: make test-external RELAY_URL=https://..."
 	@echo ""
-	@echo "Building from Source (see builds/README.md):"
-	@echo "  build-impl            Build implementation: make build-impl IMPL=moq-rs"
+	@echo "Building Images:"
+	@echo "  build-adapters        Build all adapter images"
+	@echo "  build-impl            Build from source: make build-impl IMPL=moq-rs"
 	@echo "  build-moq-rs          Convenience target for moq-rs"
 	@echo ""
 	@echo "  BUILD_ARGS examples:"
