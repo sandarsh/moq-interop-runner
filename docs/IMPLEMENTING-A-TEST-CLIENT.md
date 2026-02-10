@@ -1,5 +1,7 @@
 # Implementing a MoQT Test Client
 
+> **This is a how-to guide for test client authors.** If you just want to run existing tests against your relay, see [Getting Started](./GETTING-STARTED.md). For the exact interface specification, see [TEST-CLIENT-INTERFACE.md](./TEST-CLIENT-INTERFACE.md).
+
 This guide explains how to implement a test client for your MoQT stack that's compatible with the moq-interop-runner framework.
 
 ## Why Standardized Test Cases?
