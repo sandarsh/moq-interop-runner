@@ -1,0 +1,27 @@
+# moq-dev-rs adapter for MoQT interop testing
+#
+# Wraps the upstream moq-relay image with standard interop conventions:
+# - Reads certs from /certs/cert.pem and /certs/priv.key
+# - Supports both QUIC and WebTransport on the same UDP port via ALPN
+#
+# The upstream image uses environment variables directly for configuration.
+#
+# Build:
+#   docker build -t moq-dev-rs-interop:latest -f adapters/moq-dev-rs/Dockerfile.relay adapters/moq-dev-rs/
+#
+# Usage:
+#   docker run -v ./certs:/certs -p 4443:4443/udp moq-dev-rs-interop:latest
+
+FROM docker.io/kixelated/moq-relay
+
+# Map our /certs convention to moq-relay's expected env vars
+ENV MOQ_SERVER_BIND=[::]:4443
+ENV MOQ_SERVER_TLS_CERT=/certs/cert.pem
+ENV MOQ_SERVER_TLS_KEY=/certs/priv.key
+ENV MOQ_AUTH_PUBLIC=
+
+EXPOSE 4443/udp
+
+# Custom healthcheck: check /proc/net/udp6 for port 4443 (0x115B in hex).
+HEALTHCHECK --interval=2s --timeout=5s --start-period=5s --retries=10 \
+    CMD grep -qi ":115B" /proc/net/udp6 || grep -qi ":115B" /proc/net/udp || exit 1

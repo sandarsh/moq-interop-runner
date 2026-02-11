@@ -96,7 +96,7 @@ Here's what each field means and what to check:
 |-----|-------------|----------------|-------|-----------|
 | `moq-rs` | Cloudflare | draft-14 | relay, client | QUIC + WebTransport |
 | `moxygen` | Meta | draft-12, 13, 14 | relay | QUIC + WebTransport |
-| `moq-dev-moq` | Luke Curley | draft-14 | relay | WebTransport |
+| `moq-dev-rs` | Luke Curley | draft-14 | relay | Docker + WebTransport |
 | `moqtransport` | TUM | draft-13 | relay | (no endpoints) |
 | `quiche-moq` | Google | draft-14 | relay | WebTransport |
 | `moqtail` | OzU | draft-14 | relay | WebTransport |

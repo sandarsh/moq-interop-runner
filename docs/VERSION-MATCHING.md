@@ -107,7 +107,7 @@ Using the current `implementations.json` registry:
 |----------------|-------|----------------|
 | moq-rs | client, relay | draft-14 |
 | moxygen | relay | draft-14, draft-13, draft-12 |
-| moq-dev-moq | relay | draft-14 |
+| moq-dev-rs | relay | draft-14 |
 | moqtransport | relay | draft-13 |
 | quiche-moq | relay | draft-14 |
 | moqtail | relay | draft-14 |
@@ -120,7 +120,7 @@ Using the current `implementations.json` registry:
 |------|--------|-----------|----------------|
 | moq-rs → moq-rs | draft-14 | draft-14 | at |
 | moq-rs → moxygen | draft-14 | draft-14 | at |
-| moq-rs → moq-dev-moq | draft-14 | draft-14 | at |
+| moq-rs → moq-dev-rs | draft-14 | draft-14 | at |
 | moq-rs → moqtransport | ∅ | — | skipped |
 | moq-rs → quiche-moq | draft-14 | draft-14 | at |
 | moq-rs → moqtail | draft-14 | draft-14 | at |

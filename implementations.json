@@ -75,7 +75,7 @@
       }
     },
 
-    "moq-dev-moq": {
+    "moq-dev-rs": {
       "name": "moq (moq-dev)",
       "organization": "Luke Curley",
       "repository": "https://github.com/moq-dev/moq",
@@ -83,6 +83,15 @@
       "notes": "Rust implementation by kixelated, supports moq-lite and IETF MoQT",
       "roles": {
         "relay": {
+          "docker": {
+            "image": "moq-dev-rs-interop:latest",
+            "build": {
+              "dockerfile": "adapters/moq-dev-rs/Dockerfile.relay",
+              "context": "adapters/moq-dev-rs"
+            },
+            "upstream_image": "docker.io/kixelated/moq-relay",
+            "notes": "Adapter wraps upstream image with /certs convention"
+          },
           "remote": [
             {
               "url": "https://cdn.moq.dev/anon",
