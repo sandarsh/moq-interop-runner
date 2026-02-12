@@ -121,7 +121,7 @@
       "roles": {
         "client": {
           "docker": {
-            "image": "moq-dev-js-test-client:latest",
+            "image": "moq-dev-js-client:latest",
             "build": {
               "dockerfile": "builds/moq-dev-js/Dockerfile.client",
               "context": "builds/moq-dev-js"
