@@ -5,11 +5,16 @@ use clap::Parser;
 use moq_lite::*;
 
 #[derive(Parser)]
-#[command(name = "moq-dev-test-client")]
+#[command(name = "moq-dev-rs-client")]
 #[command(about = "MoQT interop test client using moq-lite/moq-native")]
 struct Cli {
     /// Relay URL (https:// for WebTransport, moqt:// for raw QUIC)
-    #[arg(short, long, env = "RELAY_URL", default_value = "https://localhost:4443")]
+    #[arg(
+        short,
+        long,
+        env = "RELAY_URL",
+        default_value = "https://localhost:4443"
+    )]
     relay: String,
 
     /// Run a specific test case
@@ -70,7 +75,7 @@ async fn main() -> anyhow::Result<()> {
     };
 
     println!("TAP version 14");
-    println!("# moq-dev-test-client v0.1.0");
+    println!("# moq-dev-rs-client v0.1.0");
     println!("# Relay: {}", cli.relay);
     println!("1..{}", tests.len());
 
@@ -157,7 +162,7 @@ async fn run_test(
 
     tokio::time::timeout(timeout, run_test_inner(name, client, relay_url))
         .await
-        .map_err(|_| anyhow::anyhow!("timeout after {}ms", timeout.as_millis()))?
+        .context(format!("timeout after {}ms", timeout.as_millis()))?
 }
 
 async fn run_test_inner(
@@ -181,7 +186,10 @@ async fn test_setup_only(
     client: &moq_native::Client,
     relay_url: &url::Url,
 ) -> anyhow::Result<Diagnostics> {
-    let session = client.clone().connect(relay_url.clone()).await
+    let session = client
+        .clone()
+        .connect(relay_url.clone())
+        .await
         .context("failed to connect")?;
     session.close(moq_lite::Error::Cancel);
 
@@ -199,7 +207,8 @@ async fn test_announce_only(
     let broadcast = Broadcast::produce();
     origin.publish_broadcast(TEST_NAMESPACE, broadcast.consume());
 
-    let session = client.clone()
+    let session = client
+        .clone()
         .with_publish(origin.consume())
         .connect(relay_url.clone())
         .await
@@ -223,7 +232,8 @@ async fn test_publish_namespace_done(
     let broadcast = Broadcast::produce();
     origin.publish_broadcast(TEST_NAMESPACE, broadcast.consume());
 
-    let session = client.clone()
+    let session = client
+        .clone()
         .with_publish(origin.consume())
         .connect(relay_url.clone())
         .await
@@ -251,7 +261,8 @@ async fn test_subscribe_error(
     let origin = Origin::produce();
     let mut consumer = origin.consume();
 
-    let session = client.clone()
+    let session = client
+        .clone()
         .with_consume(origin)
         .connect(relay_url.clone())
         .await
@@ -261,16 +272,10 @@ async fn test_subscribe_error(
     // The relay should never announce it, so we expect a timeout.
     tokio::select! {
         announced = consumer.announced() => {
-            match announced {
-                Some((path, Some(_broadcast))) => {
-                    anyhow::bail!("unexpected announcement: {}", path);
-                }
-                Some((_, None)) => {
-                    // Unannounce - acceptable
-                }
-                None => {
-                    // Consumer closed - acceptable
-                }
+            let (path, broadcast) = announced.context("consumer closed")?;
+            match broadcast {
+                Some(_) => anyhow::bail!("unexpected announcement: {}", path),
+                None => anyhow::bail!("unexpected unannouncement: {}", path),
             }
         }
         _ = tokio::time::sleep(Duration::from_millis(1500)) => {
@@ -299,7 +304,8 @@ async fn test_announce_subscribe(
         priority: 0,
     });
 
-    let pub_session = client.clone()
+    let pub_session = client
+        .clone()
         .with_publish(pub_origin.consume())
         .connect(relay_url.clone())
         .await
@@ -312,7 +318,8 @@ async fn test_announce_subscribe(
     let sub_origin = Origin::produce();
     let mut sub_consumer = sub_origin.consume();
 
-    let sub_session = client.clone()
+    let sub_session = client
+        .clone()
         .with_consume(sub_origin)
         .connect(relay_url.clone())
         .await
@@ -321,10 +328,9 @@ async fn test_announce_subscribe(
     // Wait for the relay to announce the published broadcast
     let sub_broadcast = tokio::select! {
         announced = sub_consumer.announced() => {
-            match announced {
-                Some((_path, Some(broadcast))) => broadcast,
-                Some((_, None)) => anyhow::bail!("broadcast was unannounced"),
-                None => anyhow::bail!("consumer closed"),
+            match announced.context("consumer closed")? {
+                (_, Some(broadcast)) => broadcast,
+                (path, None) => anyhow::bail!("unexpected unannouncement: {}", path),
             }
         }
         _ = tokio::time::sleep(Duration::from_millis(1500)) => {
@@ -341,10 +347,7 @@ async fn test_announce_subscribe(
     // Wait for the track subscription to be acknowledged
     tokio::select! {
         result = track.closed() => {
-            match result {
-                Ok(()) => {} // Success
-                Err(e) => anyhow::bail!("subscribe failed: {}", e),
-            }
+            result.context("track closed")?;
         }
         _ = tokio::time::sleep(Duration::from_millis(1000)) => {
             // Timeout waiting - subscription was accepted (no error)
@@ -366,7 +369,8 @@ async fn test_subscribe_before_announce(
     let sub_origin = Origin::produce();
     let mut sub_consumer = sub_origin.consume();
 
-    let sub_session = client.clone()
+    let sub_session = client
+        .clone()
         .with_consume(sub_origin)
         .connect(relay_url.clone())
         .await
@@ -384,7 +388,8 @@ async fn test_subscribe_before_announce(
         priority: 0,
     });
 
-    let pub_session = client.clone()
+    let pub_session = client
+        .clone()
         .with_publish(pub_origin.consume())
         .connect(relay_url.clone())
         .await
@@ -394,24 +399,19 @@ async fn test_subscribe_before_announce(
     // Either outcome is valid for subscribe-before-announce
     tokio::select! {
         announced = sub_consumer.announced() => {
-            match announced {
-                Some((_path, Some(sub_broadcast))) => {
+            match announced.context("consumer closed")? {
+                (_path, Some(sub_broadcast)) => {
                     // Got the announcement, try subscribing
                     let track = sub_broadcast.subscribe_track(&Track {
                         name: TEST_TRACK.to_string(),
                         priority: 0,
                     });
                     tokio::select! {
-                        result = track.closed() => {
-                            match result {
-                                Ok(()) => {} // Success
-                                Err(_) => {} // Also valid
-                            }
-                        }
+                        _ = track.closed() => {},
                         _ = tokio::time::sleep(Duration::from_millis(1000)) => {}
                     }
                 }
-                _ => {} // Consumer closed or unannounced - also valid
+                (path, None) => anyhow::bail!("unexpected unannouncement: {}", path),
             }
         }
         _ = tokio::time::sleep(Duration::from_millis(2000)) => {

@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
-# Dockerfile for moq-dev-test-client (Rust)
+# Dockerfile for moq-dev-rs-client (Rust)
 #
 # Builds a self-contained test client using moq-lite/moq-native crates.
 #
 # Usage:
-#   docker build -t moq-dev-test-client:latest -f Dockerfile.client .
+#   docker build -t moq-dev-rs-client:latest -f Dockerfile.client .
 
 FROM rust:1.87-bookworm AS builder
 
@@ -27,7 +27,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy binary
-COPY --from=builder /build/target/release/moq-dev-test-client /app/moq-dev-test-client
+COPY --from=builder /build/target/release/moq-dev-rs-client /app/moq-dev-rs-client
 
 # Copy entrypoint script
 COPY entrypoint-client.sh /app/entrypoint.sh

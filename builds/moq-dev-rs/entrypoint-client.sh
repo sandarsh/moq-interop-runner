@@ -1,5 +1,5 @@
 #!/bin/bash
-# entrypoint-client.sh - Wrapper script for moq-dev-test-client
+# entrypoint-client.sh - Wrapper script for moq-dev-rs-client
 # Translates standard MoQT interop environment variables to CLI arguments
 #
 # Expected environment:
@@ -34,4 +34,4 @@ if [ "${VERBOSE:-}" = "1" ] || [ "${VERBOSE:-}" = "true" ]; then
 fi
 
 # Use ${ARGS[@]+"${ARGS[@]}"} for safe empty array handling
-exec /app/moq-dev-test-client ${ARGS[@]+"${ARGS[@]}"}
+exec /app/moq-dev-rs-client ${ARGS[@]+"${ARGS[@]}"}

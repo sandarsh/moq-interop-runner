@@ -102,7 +102,7 @@
         },
         "client": {
           "docker": {
-            "image": "moq-dev-test-client:latest",
+            "image": "moq-dev-rs-client:latest",
             "build": {
               "dockerfile": "builds/moq-dev-rs/Dockerfile.client",
               "context": "builds/moq-dev-rs"

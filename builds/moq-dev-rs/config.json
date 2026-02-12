@@ -5,7 +5,7 @@
   "targets": {
     "client": {
       "dockerfile": "Dockerfile.client",
-      "image_name": "moq-dev-test-client",
+      "image_name": "moq-dev-rs-client",
       "context": "."
     }
   }
