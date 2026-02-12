@@ -126,6 +126,34 @@
               "notes": "Public relay"
             }
           ]
+        },
+        "client": {
+          "docker": {
+            "image": "moq-dev-rs-client:latest",
+            "build": {
+              "dockerfile": "builds/moq-dev-rs/Dockerfile.client",
+              "context": "builds/moq-dev-rs"
+            }
+          }
+        }
+      }
+    },
+
+    "moq-dev-js": {
+      "name": "moq (moq-dev, JS)",
+      "organization": "Luke Curley",
+      "repository": "https://github.com/moq-dev/moq",
+      "draft_versions": ["draft-14"],
+      "notes": "Bun/TypeScript test client using @moq/lite npm package",
+      "roles": {
+        "client": {
+          "docker": {
+            "image": "moq-dev-js-client:latest",
+            "build": {
+              "dockerfile": "builds/moq-dev-js/Dockerfile.client",
+              "context": "builds/moq-dev-js"
+            }
+          }
         }
       }
     },

@@ -18,5 +18,11 @@ builds/*/.last-build.json
 extra-ca.pem
 builds/*/extra-ca.pem
 
+# Rust build artifacts
+builds/moq-dev-rs/target/
+
+# Node/Bun dependencies
+builds/moq-dev-js/node_modules/
+
 # Local planning notes
 .plan/

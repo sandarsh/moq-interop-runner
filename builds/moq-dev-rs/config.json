@@ -1,0 +1,12 @@
+{
+  "name": "moq-dev-rs",
+  "description": "moq-dev Rust test client using moq-lite/moq-native",
+  "repository": "https://github.com/moq-dev/moq",
+  "targets": {
+    "client": {
+      "dockerfile": "Dockerfile.client",
+      "image_name": "moq-dev-rs-client",
+      "context": "."
+    }
+  }
+}

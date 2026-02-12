@@ -1,0 +1,12 @@
+{
+	"name": "moq-dev-js",
+	"description": "moq-dev JS/TypeScript test client using @moq/lite",
+	"repository": "https://github.com/moq-dev/moq",
+	"targets": {
+		"client": {
+			"dockerfile": "Dockerfile.client",
+			"image_name": "moq-dev-js-client",
+			"context": "."
+		}
+	}
+}
