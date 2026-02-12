@@ -6,7 +6,7 @@
 # Usage:
 #   docker build -t moq-dev-js-client:latest -f Dockerfile.client .
 
-FROM oven/bun:1 AS builder
+FROM oven/bun:latest AS builder
 
 WORKDIR /app
 
@@ -19,7 +19,7 @@ COPY tsconfig.json ./
 COPY src ./src
 
 # Runtime
-FROM oven/bun:1
+FROM oven/bun:latest
 
 WORKDIR /app
 
@@ -39,7 +39,6 @@ RUN mkdir -p /mlog
 ENV RELAY_URL=https://relay:4443
 ENV TLS_DISABLE_VERIFY=0
 
-RUN groupadd -g 1000 moq && useradd -r -u 1000 -g moq moq
-USER moq
+USER bun
 
 ENTRYPOINT ["/app/entrypoint.sh"]

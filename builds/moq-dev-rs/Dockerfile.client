@@ -6,7 +6,7 @@
 # Usage:
 #   docker build -t moq-dev-rs-client:latest -f Dockerfile.client .
 
-FROM rust:1.87-bookworm AS builder
+FROM rust:bookworm AS builder
 
 WORKDIR /build
 
