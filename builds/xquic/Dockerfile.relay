@@ -19,10 +19,9 @@ WORKDIR /build
 
 COPY . /build/xquic
 
-RUN cp -r /build/xquic/third_party/babassl /build/babassl && \
+RUN git clone --depth 1 https://github.com/Tongsuo-Project/Tongsuo.git /build/babassl && \
     cd /build/babassl && \
-    make distclean 2>/dev/null; \
-    ./config no-deprecated && \
+    ./Configure --api=1.1.1 no-deprecated && \
     make -j$(nproc)
 
 RUN mkdir -p /build/xquic_bin && \
