@@ -219,8 +219,8 @@
       "name": "imquic",
       "organization": "Meetecho",
       "repository": "https://github.com/meetecho/imquic",
-      "draft_versions": ["draft-16", "draft-15", "draft-14", "draft-13", "draft-12", "draft-11"],
-      "notes": "C implementation. Supports multiple draft versions via negotiation.",
+      "draft_versions": ["draft-17", "draft-16"],
+      "notes": "C implementation. Supports draft-17 and draft-16 via negotiation. Versions below draft-16 were dropped when draft-17 support was added (March 2026).",
       "roles": {
         "relay": {
           "remote": [
