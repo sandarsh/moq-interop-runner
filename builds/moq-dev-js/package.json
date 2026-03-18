@@ -9,12 +9,8 @@
 	},
 	"dependencies": {
 		"@moq/lite": "0.1.3",
-		"@fails-components/webtransport": "latest",
-		"@fails-components/webtransport-transport-http3-quiche": "latest"
+		"@moq/web-transport": "0.0.4"
 	},
-	"trustedDependencies": [
-		"@fails-components/webtransport-transport-http3-quiche"
-	],
 	"devDependencies": {
 		"@biomejs/biome": "latest",
 		"@types/bun": "^1.3.9"

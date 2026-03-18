@@ -1,7 +1,7 @@
 // moq-dev-js test client
 // MoQT interop test client using @moq/lite with WebTransport polyfill
 
-import * as wt from "@fails-components/webtransport";
+import { install } from "@moq/web-transport";
 import * as Moq from "@moq/lite";
 
 // Redirect all console output to stderr so library debug output
@@ -22,9 +22,7 @@ process.on("unhandledRejection", (err) => {
 });
 
 // Initialize WebTransport polyfill
-// @ts-expect-error - polyfill types don't exactly match the global WebTransport type
-globalThis.WebTransport = wt.WebTransport;
-await wt.quicheLoaded;
+install();
 
 const TESTS = [
 	"setup-only",
@@ -149,9 +147,7 @@ async function connect(
 	const options: Moq.Connection.ConnectProps = {};
 
 	if (tlsDisableVerify) {
-		// Use http:// scheme to trigger automatic cert fingerprint fetch
-		// or pass serverCertificateHashes if available
-		url.protocol = "http:";
+		options.webtransport = { serverCertificateDisableVerify: true } as WebTransportOptions;
 	}
 
 	return await Moq.Connection.connect(url, options);
